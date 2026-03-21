@@ -2,7 +2,7 @@
 
 > ⚠️ **Very Early Alpha — Things Will Break**
 >
-> This is unofficial community work reverse-engineered from the base game. Not affiliated with or endorsed by the EmergeNYC development team. Install at your own risk.
+> This is unofficial community work reverse-engineered from the base game. Not affiliated with or endorsed by the EmergeNYC development team. Install at your own risk. Multiplayer has not been tested!
 
 ---
 
