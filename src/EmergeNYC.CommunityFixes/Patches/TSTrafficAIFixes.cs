@@ -133,8 +133,8 @@ namespace EmergeNYC.CommunityFixes.Patches
         [HarmonyPostfix]
         public static void FixedUpdates_StuckCheck(TSTrafficAI __instance)
         {
-            // Don't respawn cars that are in our pullover system — they're stopped on purpose
-            if (TSTrafficPulloverPatch._activePullovers.ContainsKey(__instance.GetInstanceID()))
+            // Don't respawn cars that are in our yield system — they're stopped on purpose
+            if (YieldStateManager.IsYielding(__instance.GetInstanceID()))
                 return;
 
             int id = __instance.GetInstanceID();

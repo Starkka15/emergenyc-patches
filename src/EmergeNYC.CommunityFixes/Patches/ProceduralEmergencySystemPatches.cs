@@ -33,9 +33,38 @@ namespace EmergeNYC.CommunityFixes.Patches
             {
                 var carFirePos = Object.FindObjectOfType<CarFirePositions>();
                 if (carFirePos != null)
+                {
                     __instance.CarFirePositions = carFirePos.CarFires;
+                    Plugin.Log($"[CarFire] Loaded {carFirePos.CarFires.Length} positions from CarFirePositions connector");
+                }
                 else
-                    Debug.LogWarning("[CommunityFixes] ProceduralEmergencySystem.Start: CarFirePositions not found in scene");
+                {
+                    // Training Map fallback: no CarFirePositions connector in scene.
+                    // Try to find ParkedCar objects and use their transforms instead.
+                    var parkedCars = Object.FindObjectsOfType<ParkedCar>();
+                    if (parkedCars != null && parkedCars.Length > 0)
+                    {
+                        var transforms = new Transform[parkedCars.Length];
+                        for (int i = 0; i < parkedCars.Length; i++)
+                            transforms[i] = parkedCars[i].transform;
+                        __instance.CarFirePositions = transforms;
+                        Plugin.Log($"[CarFire] No CarFirePositions connector — fell back to {transforms.Length} ParkedCar transforms");
+                    }
+                    else
+                    {
+                        // Last resort: try ParkedVehiclesConnector (Brooklyn-style)
+                        var parkedVehicles = Object.FindObjectOfType<ParkedVehiclesConnector>();
+                        if (parkedVehicles != null && parkedVehicles.spawns != null && parkedVehicles.spawns.Length > 0)
+                        {
+                            __instance.CarFirePositions = parkedVehicles.spawns;
+                            Plugin.Log($"[CarFire] No CarFirePositions or ParkedCar — fell back to {parkedVehicles.spawns.Length} ParkedVehiclesConnector spawns");
+                        }
+                        else
+                        {
+                            Debug.LogWarning("[CommunityFixes] CarFirePositions: no CarFirePositions connector, no ParkedCar objects, and no ParkedVehiclesConnector found in scene — car fire will not spawn");
+                        }
+                    }
+                }
 
                 var manholePos = Object.FindObjectOfType<ManholeFirePositions>();
                 if (manholePos != null)
