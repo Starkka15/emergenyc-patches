@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>EmergeNYC.ModdingSDK</AssemblyName>
+    <RootNamespace>EmergeNYC.ModdingSDK</RootNamespace>
+    <Version>1.0.0</Version>
+    <Description>Public modding SDK for EmergeNYC — events, hooks, and helpers for all major game systems.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <GameDir>/mnt/ssd-raid/SteamLibrary/steamapps/common/EmergeNYC</GameDir>
+    <ManagedDir>$(GameDir)/EMERGENYC_Data/Managed</ManagedDir>
+    <BepInExDir>$(GameDir)/BepInEx</BepInExDir>
+    <PluginsDir>$(BepInExDir)/plugins</PluginsDir>
+  </PropertyGroup>
+
+  <!-- Unity Engine -->
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)/UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(ManagedDir)/UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>$(ManagedDir)/UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Game Assemblies -->
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp-firstpass">
+      <HintPath>$(ManagedDir)/Assembly-CSharp-firstpass.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="PhotonUnityNetworking">
+      <HintPath>$(ManagedDir)/PhotonUnityNetworking.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Auto-copy to plugins after build -->
+  <Target Name="CopySDKToPlugins" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)/$(AssemblyName).dll" DestinationFolder="$(PluginsDir)" />
+    <Message Text="Copied $(AssemblyName).dll to $(PluginsDir)" Importance="high" />
+  </Target>
+
+</Project>

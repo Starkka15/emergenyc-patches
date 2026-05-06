@@ -26,13 +26,13 @@ namespace EmergeNYC.CommunityFixes.Patches
         internal static readonly Dictionary<int, PulloverState> _activePullovers =
             new Dictionary<int, PulloverState>();
 
-        private const float PulloverOffset = 3.5f;
-        private const float PulloverSpeed = 2.5f;
+        private const float PulloverOffset = 4.0f;
+        private const float PulloverSpeed = 3.5f;
         private const float ReturnSpeed = 1.5f;
         private const float SirenCheckRadius = 60f;
-        private const float HoldTimeAfterClear = 3f;
+        private const float HoldTimeAfterClear = 2f;
         private const float PulloverCooldown = 2f;
-        private const float SeekTimeout = 8f;
+        private const float SeekTimeout = 5f;
         private const float ObstacleCheckRadius = 1.0f;
         private const float ObstacleCheckDist = 4.5f;
 

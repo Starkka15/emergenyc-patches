@@ -129,10 +129,16 @@
     </Reference>
   </ItemGroup>
 
-  <!-- Auto-copy to plugins folder after build -->
+  <!-- SDK project reference (V12: SDK built first, no circular dependency) -->
+  <ItemGroup>
+    <ProjectReference Include="..\EmergeNYC.ModdingSDK\EmergeNYC.ModdingSDK.csproj" />
+  </ItemGroup>
+
+  <!-- Auto-copy to plugins folder after build (CommunityFixes + SDK) -->
   <Target Name="CopyToPlugins" AfterTargets="Build">
     <Copy SourceFiles="$(OutputPath)/$(AssemblyName).dll" DestinationFolder="$(PluginsDir)" />
-    <Message Text="Copied $(AssemblyName).dll to $(PluginsDir)" Importance="high" />
+    <Copy SourceFiles="$(OutputPath)/EmergeNYC.ModdingSDK.dll" DestinationFolder="$(PluginsDir)" />
+    <Message Text="Copied $(AssemblyName).dll + EmergeNYC.ModdingSDK.dll to $(PluginsDir)" Importance="high" />
   </Target>
 
 </Project>

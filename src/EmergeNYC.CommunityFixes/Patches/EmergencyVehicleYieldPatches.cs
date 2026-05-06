@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
+using EmergeNYC.ModdingSDK;
 
 namespace EmergeNYC.CommunityFixes.Patches
 {
@@ -273,13 +274,15 @@ namespace EmergeNYC.CommunityFixes.Patches
             };
 
             _yieldStates[id] = state;
+            TrafficAPI.RaiseCarYieldStart(tsai);
             Plugin.Log($"[Yield] Car {id} detected siren (dir={state.sirenDirection}, rightmost={isRightmost})");
         }
 
         /// <summary>
         /// Compute siren direction relative to traffic car.
+        /// Internal so BroadcastToTraffic (T4) and gap-check (T5) can reuse it.
         /// </summary>
-        private static RelativeDirection ComputeDirection(TSTrafficAI car, EmergencyVehicleRegistry.SirenEntry siren)
+        internal static RelativeDirection ComputeDirection(TSTrafficAI car, EmergencyVehicleRegistry.SirenEntry siren)
         {
             Vector3 toSiren = (siren.Position - car.transform.position).normalized;
             Vector3 carForward = car.transform.forward;
@@ -394,6 +397,10 @@ namespace EmergeNYC.CommunityFixes.Patches
                     {
                         state.lastMergeAttemptTime = Time.time;
                         state.preMergeLane = nav.currentLane;
+
+                        // T5: Create gap in right lane before merging (V5 — we own MAXSPEED for yielding cars).
+                        // Find the nearest non-yielding car in the right lane that would block our merge.
+                        TryCreateMergeGap(tsai, nav);
 
                         // Reset the 3s rate limit on GetOutOfLane so we can call it
                         _lastRequestRef(nav) = 0f;
@@ -596,6 +603,57 @@ namespace EmergeNYC.CommunityFixes.Patches
         }
 
         /// <summary>
+        /// T5: Speed up the nearest trailing car in the right-adjacent lane to create a merge gap.
+        /// Only touches non-yielding cars (V5). Effect is one-tick (MAXSPEED restored next Tick call).
+        /// </summary>
+        private static void TryCreateMergeGap(TSTrafficAI mergingCar, TSNavigation nav)
+        {
+            int rightLane = nav.lanes[nav.currentLane].laneLinkRight;
+            if (rightLane == -1) return;
+
+            EnsureFieldRefs();
+
+            const float SearchRadius = 20f;
+            const float SearchRadiusSq = SearchRadius * SearchRadius;
+
+            Vector3 carPos = mergingCar.transform.position;
+            Vector3 carBack = -mergingCar.transform.forward;
+
+            TSTrafficAI bestTrailer = null;
+            float bestDistSq = float.MaxValue;
+
+            var list = TSTrafficAI.trafficAIList;
+            for (int i = 0; i < list.Count; i++)
+            {
+                var candidate = list[i];
+                if (candidate == null || candidate == mergingCar) continue;
+                if (IsYielding(candidate.GetInstanceID())) continue; // V5
+
+                var candidateNav = candidate.GetComponent<TSNavigation>();
+                if (candidateNav == null || candidateNav.currentLane != rightLane) continue;
+
+                Vector3 delta = candidate.transform.position - carPos;
+                float dSq = delta.sqrMagnitude;
+                if (dSq > SearchRadiusSq) continue;
+
+                // Must be behind or beside (not already ahead)
+                if (Vector3.Dot(carBack, delta.normalized) < -0.3f) continue;
+
+                if (dSq < bestDistSq)
+                {
+                    bestDistSq = dSq;
+                    bestTrailer = candidate;
+                }
+            }
+
+            if (bestTrailer == null) return;
+
+            // Speed it up for one tick to open a gap — capped at SpeedMergeSpeedUp
+            float cur = _MAXSPEEDRef(bestTrailer);
+            _MAXSPEEDRef(bestTrailer) = cur * YieldConstants.SpeedMergeSpeedUp;
+        }
+
+        /// <summary>
         /// Trigger airhorn flush on all yielding cars within range.
         /// </summary>
         public static int FlushForAirhorn(Vector3 hornPos, float radius)
@@ -646,6 +704,7 @@ namespace EmergeNYC.CommunityFixes.Patches
                 EnsureFieldRefs();
                 _myLaneOffsetRef(tsai) = state.originalMyLaneOffset;
                 _yieldStates.Remove(id);
+                TrafficAPI.RaiseCarYieldEnd(tsai);
             }
         }
     }
@@ -694,7 +753,9 @@ namespace EmergeNYC.CommunityFixes.Patches
             if (EmergencyVehicleRegistry._activeSirens.Count == 0) return;
             if (TSTrafficAI.trafficAIList == null || TSTrafficAI.trafficAIList.Count == 0) return;
 
-            // For each active siren, find nearby traffic cars
+            // T4: direction-aware radii — V8 (one broadcast pass per BroadcastInterval)
+            float maxRadiusSq = YieldConstants.BroadcastRadiusBehind * YieldConstants.BroadcastRadiusBehind;
+
             foreach (var sirenKvp in EmergencyVehicleRegistry._activeSirens)
             {
                 var siren = sirenKvp.Value;
@@ -708,18 +769,32 @@ namespace EmergeNYC.CommunityFixes.Patches
                     if (tsai == null) continue;
 
                     float distSq = (sirenPos - tsai.transform.position).sqrMagnitude;
-                    float radiusSq = YieldConstants.DefaultBroadcastRadius *
-                                     YieldConstants.DefaultBroadcastRadius;
 
-                    if (distSq < radiusSq)
-                    {
+                    // Quick reject: beyond largest possible radius (Behind=80m)
+                    if (distSq > maxRadiusSq) continue;
+
+                    // Compute direction-aware radius for this car
+                    var dir = YieldStateManager.ComputeDirection(tsai, siren);
+                    float radius = DirectionalRadius(dir);
+                    if (distSq < radius * radius)
                         YieldStateManager.BeginYield(tsai, siren);
-                    }
                 }
             }
 
             // Also broadcast for baked traffic (keep existing system)
             BroadcastToBakedTraffic();
+        }
+
+        private static float DirectionalRadius(RelativeDirection dir)
+        {
+            switch (dir)
+            {
+                case RelativeDirection.Behind:   return YieldConstants.BroadcastRadiusBehind;
+                case RelativeDirection.Beside:   return YieldConstants.BroadcastRadiusBeside;
+                case RelativeDirection.Ahead:    return YieldConstants.BroadcastRadiusAhead;
+                case RelativeDirection.Opposite: return YieldConstants.BroadcastRadiusOpposite;
+                default:                         return YieldConstants.DefaultBroadcastRadius;
+            }
         }
 
         private static void BroadcastToBakedTraffic()

@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 using WoofTools.API;
+using EmergeNYC.ModdingSDK;
 
 namespace EmergeNYC.CommunityFixes.Patches
 {
@@ -119,33 +120,52 @@ namespace EmergeNYC.CommunityFixes.Patches
         private static readonly Dictionary<int, StuckState> _stuckTracking =
             new Dictionary<int, StuckState>();
 
-        private const float StuckSpeedThreshold = 0.5f;  // Below this = "not moving"
-        private const float StuckTimeBeforeRespawn = 12f; // Seconds stuck before respawn
+        private const float StuckSpeedThreshold = 0.5f;
+        private const float StuckTimeBeforeRespawn = 7f;   // was 12 — V7: last-resort safety net
+        private const float ParkedSpeedThreshold = 0.3f;
+        private const float ParkedTimeBeforeRespawn = 5f;  // fast path: no reason to stop but not moving
+
+        private static AccessTools.FieldRef<TSTrafficAI, bool> _fullStopStuckRef;
+        private static AccessTools.FieldRef<TSTrafficAI, float> _lastSetStuckRef;
+        private static bool _stuckRefsInit;
+
+        private static void EnsureStuckRefs()
+        {
+            if (_stuckRefsInit) return;
+            _fullStopStuckRef = AccessTools.FieldRefAccess<TSTrafficAI, bool>("fullStop");
+            _lastSetStuckRef  = AccessTools.FieldRefAccess<TSTrafficAI, float>("lastSet");
+            _stuckRefsInit = true;
+        }
 
         private class StuckState
         {
             public Vector3 lastPosition;
             public float stuckSince;
             public bool wasStopped;
+            public float parkedSince;
+            public bool wasParked;
         }
 
         [HarmonyPatch("FixedUpdates")]
         [HarmonyPostfix]
         public static void FixedUpdates_StuckCheck(TSTrafficAI __instance)
         {
-            // Don't respawn cars that are in our yield system — they're stopped on purpose
-            if (YieldStateManager.IsYielding(__instance.GetInstanceID()))
-                return;
-
             int id = __instance.GetInstanceID();
+
+            // V6: skip cars the yield system intentionally stopped
+            if (YieldStateManager.IsYielding(id)) return;
+
+            EnsureStuckRefs();
 
             if (!_stuckTracking.TryGetValue(id, out var state))
             {
                 state = new StuckState
                 {
                     lastPosition = __instance.transform.position,
-                    stuckSince = Time.time,
-                    wasStopped = false
+                    stuckSince   = Time.time,
+                    wasStopped   = false,
+                    parkedSince  = Time.time,
+                    wasParked    = false
                 };
                 _stuckTracking[id] = state;
                 return;
@@ -154,9 +174,39 @@ namespace EmergeNYC.CommunityFixes.Patches
             float distMoved = (state.lastPosition - __instance.transform.position).sqrMagnitude;
             state.lastPosition = __instance.transform.position;
 
-            // Check if car is effectively not moving
+            // --- Fast parked-car path (T3) ---
+            // V6: canMove==true means lastSet+2f < Time.time (no legitimate stop signal)
+            // V6: fullStop==false rules out player-proximity stop
+            bool fullStop = _fullStopStuckRef(__instance);
+            bool canMoveBool = _lastSetStuckRef(__instance) + 2f < Time.time;
+            bool slowEnough  = __instance.carSpeed < ParkedSpeedThreshold;
+
+            if (canMoveBool && !fullStop && slowEnough && !YieldStateManager.IsYielding(id))
+            {
+                if (!state.wasParked)
+                {
+                    state.parkedSince = Time.time;
+                    state.wasParked   = true;
+                }
+                else if (Time.time - state.parkedSince > ParkedTimeBeforeRespawn)
+                {
+                    var poolable = __instance.GetComponent<IPoolable>();
+                    if (poolable != null)
+                    {
+                        poolable.Deactivate();
+                        _stuckTracking.Remove(id);
+                        Plugin.Log($"[TSFix-Parked] Car {id} parked {ParkedTimeBeforeRespawn}s with no stop reason — respawned");
+                        return;
+                    }
+                }
+            }
+            else
+            {
+                state.wasParked = false;
+            }
+
+            // --- Slow safety-net stuck path (V7) ---
             bool isStuck = distMoved < StuckSpeedThreshold * StuckSpeedThreshold * 0.09f;
-            // 0.09 = 0.3s interval squared — if moved less than threshold*0.3 per tick
 
             if (isStuck)
             {
@@ -166,16 +216,14 @@ namespace EmergeNYC.CommunityFixes.Patches
                     state.wasStopped = true;
                 }
 
-                // If stuck long enough and not at a red light / normal stop
                 if (Time.time - state.stuckSince > StuckTimeBeforeRespawn)
                 {
-                    // Force respawn via the pool system
                     var poolable = __instance.GetComponent<IPoolable>();
                     if (poolable != null)
                     {
                         poolable.Deactivate();
                         _stuckTracking.Remove(id);
-                        Plugin.Log($"[TSFix-Stuck] Car {id} was stuck for {StuckTimeBeforeRespawn}s — respawned");
+                        Plugin.Log($"[TSFix-Stuck] Car {id} stuck {StuckTimeBeforeRespawn}s — respawned");
                     }
                 }
             }
@@ -185,11 +233,17 @@ namespace EmergeNYC.CommunityFixes.Patches
             }
         }
 
+        [HarmonyPatch("OnEnable")]
+        [HarmonyPostfix]
+        public static void OnEnable_Spawned(TSTrafficAI __instance) =>
+            TrafficAPI.RaiseCarSpawned(__instance);
+
         [HarmonyPatch("OnDisable")]
         [HarmonyPostfix]
         public static void OnDisable_Cleanup(TSTrafficAI __instance)
         {
             _stuckTracking.Remove(__instance.GetInstanceID());
+            TrafficAPI.RaiseCarDespawned(__instance);
         }
     }
 }
