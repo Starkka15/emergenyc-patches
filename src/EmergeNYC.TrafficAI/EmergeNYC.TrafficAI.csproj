@@ -1,0 +1,91 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>EmergeNYC.TrafficAI</AssemblyName>
+    <RootNamespace>EmergeNYC.TrafficAI</RootNamespace>
+    <Version>0.1.0</Version>
+    <Description>Custom traffic vehicle AI for EmergeNYC</Description>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <GameDir>/mnt/ssd-raid/SteamLibrary/steamapps/common/EmergeNYC</GameDir>
+    <ManagedDir>$(GameDir)/EMERGENYC_Data/Managed</ManagedDir>
+    <BepInExDir>$(GameDir)/BepInEx</BepInExDir>
+    <PluginsDir>$(BepInExDir)/plugins</PluginsDir>
+  </PropertyGroup>
+
+  <!-- BepInEx + Harmony -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExDir)/core/BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExDir)/core/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Unity Engine -->
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedDir)/UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(ManagedDir)/UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AIModule">
+      <HintPath>$(ManagedDir)/UnityEngine.AIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>$(ManagedDir)/UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Game Assemblies -->
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)/Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp-firstpass">
+      <HintPath>$(ManagedDir)/Assembly-CSharp-firstpass.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="PhotonUnityNetworking">
+      <HintPath>$(ManagedDir)/PhotonUnityNetworking.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="PhotonRealtime">
+      <HintPath>$(ManagedDir)/PhotonRealtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Photon3Unity3D">
+      <HintPath>$(ManagedDir)/Photon3Unity3D.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- SDK (V12: no CommunityFixes dep — use SDK bridge for registry access) -->
+  <ItemGroup>
+    <ProjectReference Include="..\EmergeNYC.ModdingSDK\EmergeNYC.ModdingSDK.csproj" />
+  </ItemGroup>
+
+  <!-- Auto-copy to plugins folder after build -->
+  <Target Name="CopyToPlugins" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)/$(AssemblyName).dll" DestinationFolder="$(PluginsDir)" />
+    <Message Text="Copied $(AssemblyName).dll to $(PluginsDir)" Importance="high" />
+  </Target>
+
+</Project>

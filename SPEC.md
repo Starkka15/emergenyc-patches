@@ -4,6 +4,8 @@
 
 Overhaul EmergeNYC traffic patches (camera-based spawn/despawn, fewer stuck/parked cars, better flow, GTA V-style emergency yield) AND ship a full-game public modder SDK covering every major game system: emergencies, fire, EMS, traffic, characters, vehicles, dispatch, and sirens.
 
+Also ship `EmergeNYC.TrafficAI.dll`: a custom traffic vehicle AI (`CustomTrafficVehicle`) that replaces `TSTrafficAI`'s movement layer with a proper state-machine-driven controller. Reads `TSNavigation` lane graph for routing, drives via `RCC_CarControllerV3` inputs, does spatial obstacle/edge/siren detection via Unity physics. EV avoidance only triggers on active siren.
+
 ---
 
 ## §C — Constraints
@@ -17,7 +19,10 @@ Overhaul EmergeNYC traffic patches (camera-based spawn/despawn, fewer stuck/park
 - `TrafficMatrixUpdater.instance` and `TrafficSpawner.instance` are null in test/sandbox scenes
 - Unity 2022.3.1f1 Mono runtime
 - Build: `dotnet build src/EmergeNYC.CommunityFixes/EmergeNYC.CommunityFixes.csproj -c Release`
+- Build TrafficAI: `dotnet build src/EmergeNYC.TrafficAI/EmergeNYC.TrafficAI.csproj -c Release`
 - Deploy: `bin/Release/netstandard2.1/*.dll` → `BepInEx/plugins/`
+- `TSNavigation` is its own `MonoBehaviour` — continues updating when `TSTrafficAI` is disabled
+- `RCC_CarControllerV3` reads `gasInput/brakeInput/steerInput` public floats in its own `FixedUpdate`
 
 ---
 
@@ -72,6 +77,28 @@ Overhaul EmergeNYC traffic patches (camera-based spawn/despawn, fewer stuck/park
 | `FFD_SirenControl.SirenState` | enum | `Off, Horn, Wail, Yelp, Prty, Man` |
 | `NYPDSirenController` | per-vehicle component | `wailing`, `yelping`, `prtying` bools |
 | `VehicleSpawner` | component | `Spawn(string prefab)` |
+| **— TrafficAI: RCC + Navigation —** | | |
+| `RCC_CarControllerV3.gasInput` | public float | throttle 0–1; write directly |
+| `RCC_CarControllerV3.brakeInput` | public float | brake 0–1; write directly |
+| `RCC_CarControllerV3.steerInput` | public float | steer -1(left)→1(right); write directly |
+| `RCC_CarControllerV3.canControl` | public bool | set false to stop RCC reading its own AI inputs |
+| `RCC_CarControllerV3.speed` | public float | current speed km/h read-only |
+| `TSNavigation.waypoints` | `TSPoints[]` | current lane waypoints |
+| `TSNavigation.currentWaypoint` | int | index into waypoints[] |
+| `TSNavigation.RelativeWaypointPosition` | `Vector3` | pre-computed vector to next waypoint (local space) |
+| `TSNavigation.currentMaxSpeed` | float | lane speed limit km/h |
+| `TSNavigation.lanes` | `TSLaneInfo[]` | full lane graph |
+| `TSNavigation.currentLane` | int (property) | current lane index |
+| `TSLaneInfo.points` | `TSPoints[]` | world-space waypoints in lane |
+| `TSLaneInfo.laneWidth` | float | lane width m (default 2.5) |
+| `TSLaneInfo.GetClosest(ref float, Vector3)` | method | closest lane point to world pos |
+| `TSLaneInfo.laneLinkRight` | int | right adjacent lane (-1 = none) |
+| `TSPoints.point` | `Vector3` | world-space waypoint position |
+| `Physics.SphereCast` | Unity API | forward obstacle detection |
+| `NavMesh.FindClosestEdge` | Unity API | road edge distance from position |
+| `Physics.OverlapBox` | Unity API | shoulder / parked car detection |
+| `EmergencyVehicleRegistry` | our static | registered EVs; cross-reference with siren state |
+| `FFD_SirenControl.SirenState_Current` | enum field | `!= Off` = siren active |
 | **— SDK: Public API (our code) —** | | |
 | `EmergeNYCSDK` | our static | top-level SDK entry point, all subsystem refs |
 | `EmergencyAPI` | our static | emergency lifecycle hooks |
@@ -104,6 +131,12 @@ Overhaul EmergeNYC traffic patches (camera-based spawn/despawn, fewer stuck/park
 | V13 | All SDK events are `static event Action<T>` delegates — null-safe invoke via `?.Invoke()`. No event ever throws to the game loop. Exceptions in handlers caught and logged. |
 | V14 | SDK never calls game methods on the main thread from a postfix that already modified state — use `BeginYield` / `HarmonyLib.AccessTools` read-only in postfixes, write via prefix or separate method call. |
 | V15 | SDK helper queries (e.g. `EmergencyAPI.ActiveEmergency`) are read-only wrappers. SDK does not cache mutable game objects — always dereferences from the live singleton. |
+| V16 | CTV `PullRight`/`HardStop` states only activate when `EmergencyVehicleRegistry` contains ≥1 EV whose `FFD_SirenControl.SirenState_Current != Off`. Proximity alone (no siren) never triggers EV avoidance. |
+| V17 | CTV lateral displacement clamped by `min(TSLaneInfo.laneWidth / 2, NavMesh.FindClosestEdge distance)` — never push a car off the drivable NavMesh surface. |
+| V18 | `TSTrafficAI` disabled (not destroyed) on CTV injection; re-enabled on CTV `OnDisable` — preserves original AI if mod unloads. |
+| V19 | `RCC_CarControllerV3.gasInput/brakeInput/steerInput` written exclusively from CTV `FixedUpdate` while CTV active. `TSTrafficAI` disabled so no concurrent write occurs. |
+| V20 | Forward `SphereCast` origin = `transform.position + transform.forward * (halfCarLength + 0.5f)` — prevents self-intersection with own collider. |
+| V21 | CTV reads `TSNavigation.RelativeWaypointPosition` and `waypoints[]` for steering — does not call TSNavigation methods. TSNavigation updates itself as its own MonoBehaviour. |
 
 ---
 
@@ -126,6 +159,14 @@ Overhaul EmergeNYC traffic patches (camera-based spawn/despawn, fewer stuck/park
 | T13 | x | `CharacterAPI`: `OnCharacterSpawned(AIManager)`, `OnAITakeControl(AIManager)`, `OnPlayerTakeControl(AIManager)`, `OnEquipmentChanged(AIManager,string)`; helpers: `SpawnAI(firehouse,engine,role,pos,rot)`, `GetAllCharacters()` | V13,V14 |
 | T14 | x | `VehicleAPI`: `OnVehicleSpawned(GameObject)`, `OnSirenActivated(FFD_SirenControl,SirenState)`, `OnSirenDeactivated(FFD_SirenControl)`, `OnAirhornUsed(FFD_Airhorn)`, `OnPoliceSirenChanged(NYPDSirenController)`; helper: `GetAllSirenVehicles()` | V13,V14 |
 | T15 | x | `DispatchAPI`: `OnCallGenerated(string type,Vector3 pos)`, `OnUnitAssigned(string unit,Emergency)`, `OnTicketSent(string address,string box)`; helpers: `ForceEmergency(string type)`, `GetNearestEngine(Vector3)`, `GetNearestTruck(Vector3)` | V13,V15 |
+| T16 | x | New project `src/EmergeNYC.TrafficAI/` — csproj refs game DLLs + ModdingSDK + BepInEx; `TrafficAIPlugin` BepInEx entry point; `CopyToPlugins` MSBuild target | V12 |
+| T17 | x | `CustomTrafficVehicle` (CTV) MonoBehaviour skeleton — `State` enum (`Cruise/SlowDown/PullRight/HardStop/Yield/Resume`); acquire `RCC_CarControllerV3`, `TSNavigation`, `TSTrafficAI` refs on `Start`; disable `TSTrafficAI`; re-enable on `OnDisable` | V18,V19 |
+| T18 | x | Cruise state — read `TSNavigation.RelativeWaypointPosition` → compute steer angle → `RCC.steerInput`; proportional throttle to `currentMaxSpeed` → `RCC.gasInput`; no game method calls (V21) | V19,V21 |
+| T19 | x | Forward obstacle detection — `Physics.SphereCast` from offset origin (V20); `SlowDown` ramp 30m→8m (`brakeInput` proportional); `HardStop` ≤8m (`brakeInput=1, gasInput=0`); return to `Cruise` when path clear | V20 |
+| T20 | x | Road edge clamping — `NavMesh.FindClosestEdge` + `TSLaneInfo.laneWidth`; compute `maxLateralDisplace`; expose as property used by `PullRight` and `Yield` states (V17) | V17 |
+| T21 | x | EV siren detection — coroutine scans `EmergencyVehicleRegistry` every 0.1s; skip EVs with siren off (V16); for siren-active EVs in range: dot product → `PullRight` if beside/behind, `HardStop` if oncoming in lane ≤30m | V16 |
+| T22 | x | Shoulder obstruction — `Physics.OverlapBox` in target pull-right space before entering `PullRight`; if blocked → `HardStop` instead; recheck on resume | V17 |
+| T23 | x | Injection — `TSTrafficAI.OnEnable` Harmony postfix adds CTV component if absent, disables `TSTrafficAI`; `TSTrafficAI.OnDisable` postfix re-enables `TSTrafficAI`, destroys CTV | V18 |
 
 ---
 

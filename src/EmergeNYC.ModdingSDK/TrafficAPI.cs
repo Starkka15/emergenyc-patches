@@ -21,6 +21,8 @@ namespace EmergeNYC.ModdingSDK
         public static Action<Transform>? UnregisterEmergencyVehicleImpl;
         public static Func<IReadOnlyList<TSTrafficAI>>? GetYieldingCarsImpl;
         public static Action<float>? SetSpawnDensityImpl;
+        /// <summary>Returns (transform, velocity) for every EV with an active siren. Wired by CommunityFixes.</summary>
+        public static Func<IReadOnlyList<(Transform ev, Vector3 velocity)>>? GetSirenActiveVehiclesImpl;
 
         // ── Public helpers ───────────────────────────────────────────────────
 
@@ -45,6 +47,14 @@ namespace EmergeNYC.ModdingSDK
         /// </summary>
         public static void SetSpawnDensity(float density) =>
             SetSpawnDensityImpl?.Invoke(density);
+
+        /// <summary>
+        /// Returns transform + velocity for every registered EV with siren active.
+        /// Used by CustomTrafficVehicle for siren-gated avoidance (V16).
+        /// Returns empty list if CommunityFixes not loaded or no active sirens.
+        /// </summary>
+        public static IReadOnlyList<(Transform ev, Vector3 velocity)> GetSirenActiveVehicles() =>
+            GetSirenActiveVehiclesImpl?.Invoke() ?? Array.Empty<(Transform, Vector3)>();
 
         // ── Internal raise ───────────────────────────────────────────────────
         internal static void RaiseCarYieldStart(TSTrafficAI car) =>
