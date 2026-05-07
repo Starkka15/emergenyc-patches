@@ -1,5 +1,4 @@
 using System.Collections;
-using HarmonyLib;
 using UnityEngine;
 using UnityEngine.AI;
 using EmergeNYC.ModdingSDK;
@@ -7,75 +6,69 @@ using EmergeNYC.ModdingSDK;
 namespace EmergeNYC.TrafficAI
 {
     /// <summary>
-    /// Replaces TSTrafficAI's movement layer with a proper state-machine driver.
-    /// Reads TSNavigation for routing, writes RCC_CarControllerV3 inputs for motion.
-    /// Injected onto TSTrafficAI vehicles by CTVInjectionPatch (T23).
+    /// Wraps TSTrafficAI.OnUpdateAI to inject avoidance behavior on top of the
+    /// original AI. TSTrafficAI stays enabled — it handles traffic lights, waypoints,
+    /// and point reservations. CTV only overrides OnUpdateAI args during avoidance
+    /// states; normal operation passes through unchanged. (V18, V19, V22)
     /// </summary>
     public class CustomTrafficVehicle : MonoBehaviour
     {
         public enum State
         {
-            Cruise,
-            SlowDown,
-            PullRight,
-            HardStop,
-            Yield,
-            Resume
+            Passthrough,   // normal — original OnUpdateAI args pass through unchanged
+            SlowDown,      // forward obstacle: reduce throttle, add brake
+            PullRight,     // EV siren active beside/behind: add rightward steer bias
+            HardStop,      // oncoming EV head-on OR shoulder blocked: full brake
         }
 
-        // ── State ────────────────────────────────────────────────────────────
-        public State CurrentState { get; private set; } = State.Cruise;
+        public State CurrentState { get; private set; } = State.Passthrough;
 
-        private State _prevObstacleState = State.Cruise;
-        private bool  _evActive;          // true = siren-active EV in range (V16)
-        private bool  _shoulderBlocked;   // true = OverlapBox found obstacle in shoulder (T22)
-        private float _lateralOffset;     // current applied lateral steering bias
+        // ── Refs ─────────────────────────────────────────────────────────────
+        private TSTrafficAI?                      _tsAI;
+        private TSNavigation?                     _nav;
+        private TSTrafficAI.OnUpdateAIDelegate?   _originalDelegate;
+        private Collider?                         _col;
+        private float                             _halfLen;
+
+        // ── Per-state data ───────────────────────────────────────────────────
+        private float _obstacleProximity;   // 0–1, 1 = very close
+        private float _lateralBias;         // current rightward steer offset (lerped)
+        private float _targetLateralBias;
+        private bool  _evActive;
+        private bool  _shoulderBlocked;
         private float _maxLateralDisplace;
 
-        // ── Cached refs ──────────────────────────────────────────────────────
-        private RCC_CarControllerV3? _rcc;
-        private TSNavigation?        _nav;
-        private TSTrafficAI?         _tsAI;
-        private TSLaneInfo?          _currentLaneInfo;
-        private Collider?            _col;
-        private float                _halfLen;
-
         // ── Tuning ───────────────────────────────────────────────────────────
-        private const float ObstacleSlowRange   = 30f;
-        private const float ObstacleHardRange   = 8f;
-        private const float SirenScanRadius     = 80f;
-        private const float SirenHardStopDist   = 30f;
-        private const float SirenHardStopDot    = -0.5f;   // approaching head-on threshold
-        private const float PullRightMaxOffset  = 2.5f;    // m, max lateral push (clamped by V17)
-        private const float LateralLerpSpeed    = 2f;
-        private const float SphereCastRadius    = 1.4f;
-        private const float CastLayerMask       = ~0;       // refined in T19 if needed
-        private const float ScanInterval        = 0.1f;
+        private const float ObstacleSlowRange    = 30f;
+        private const float ObstacleHardRange    = 8f;
+        private const float SirenScanRadius      = 80f;
+        private const float SirenHardStopDist    = 30f;
+        private const float SirenHardStopDot     = -0.5f;
+        private const float PullRightMaxOffset   = 0.5f;    // steer units (TSTrafficAI uses -1..1)
+        private const float LateralLerpSpeed     = 1.5f;
+        private const float SphereCastRadius     = 1.4f;
+        private const float ScanInterval         = 0.1f;
 
-        // ── AccessTools refs (V19: read TSTrafficAI.enabled only) ───────────
+        // ── Lifecycle ────────────────────────────────────────────────────────
 
         private void Start()
         {
-            _rcc   = GetComponent<RCC_CarControllerV3>();
-            _nav   = GetComponent<TSNavigation>();
-            _tsAI  = GetComponent<TSTrafficAI>();
-            _col   = GetComponent<Collider>();
+            _tsAI = GetComponent<TSTrafficAI>();
+            _nav  = GetComponent<TSNavigation>();
+            _col  = GetComponent<Collider>();
 
-            if (_col != null)
-                _halfLen = _col.bounds.extents.z;
-            else
-                _halfLen = 2.5f; // fallback
+            _halfLen = _col != null ? _col.bounds.extents.z : 2.5f;
 
-            if (_rcc == null || _nav == null || _tsAI == null)
+            if (_tsAI == null)
             {
-                TrafficAIPlugin.Log($"[CTV] Missing ref on {name} — disabling CTV");
+                TrafficAIPlugin.Log($"[CTV] No TSTrafficAI on {name} — disabling");
                 enabled = false;
                 return;
             }
 
-            // Disable original AI, take over RCC inputs (V18, V19)
-            _tsAI.enabled = false;
-            _rcc.canControl = false;
+            // Wrap the delegate (V22: original must be preserved and called)
+            _originalDelegate = _tsAI.OnUpdateAI;
+            _tsAI.OnUpdateAI  = OnUpdateAIWrapper;
 
             StartCoroutine(SirenScanLoop());
             StartCoroutine(ShoulderCheckLoop());
@@ -83,46 +76,65 @@ namespace EmergeNYC.TrafficAI
 
         private void OnDisable()
         {
-            // Re-enable TSTrafficAI only if the GameObject is still active (mod unload path).
-            // If the object is being deactivated, TSTrafficAI will also be deactivated — don't touch it. (V18)
-            if (gameObject.activeInHierarchy && _tsAI != null)
-            {
-                _tsAI.enabled = true;
-                if (_rcc != null) _rcc.canControl = true;
-            }
+            // Restore original delegate so TSTrafficAI drives normally if CTV unloads (V18)
+            if (_tsAI != null && _originalDelegate != null)
+                _tsAI.OnUpdateAI = _originalDelegate;
         }
 
         private void FixedUpdate()
         {
-            if (_rcc == null || _nav == null) return;
-
-            UpdateCurrentLaneInfo();
-            UpdateMaxLateralDisplace();  // T20
-            UpdateObstacleState();       // T19
+            UpdateMaxLateralDisplace();
+            UpdateObstacleState();
             ResolveState();
-            ApplyState();
+            LerpLateralBias();
         }
 
-        // ── Lane info ────────────────────────────────────────────────────────
+        // ── OnUpdateAI wrapper (V19, V22) ────────────────────────────────────
 
-        private void UpdateCurrentLaneInfo()
+        private void OnUpdateAIWrapper(float steering, float brake, float throttle, bool isUpSideDown)
         {
-            if (_nav.lanes == null || _nav.lanes.Length == 0) return;
-            int lane = _nav.currentLane;
-            if (lane >= 0 && lane < _nav.lanes.Length)
-                _currentLaneInfo = _nav.lanes[lane];
+            switch (CurrentState)
+            {
+                case State.Passthrough:
+                    _originalDelegate?.Invoke(steering, brake, throttle, isUpSideDown);
+                    break;
+
+                case State.SlowDown:
+                    // Reduce throttle proportionally, add gentle braking
+                    float reducedThrottle = throttle * (1f - _obstacleProximity * 0.7f);
+                    float addedBrake      = Mathf.Max(brake, _obstacleProximity * 0.5f);
+                    _originalDelegate?.Invoke(steering, addedBrake, reducedThrottle, isUpSideDown);
+                    break;
+
+                case State.PullRight:
+                    // Add rightward steer bias, reduce speed moderately
+                    float pullSteer = Mathf.Clamp(steering + _lateralBias, -1f, 1f);
+                    _originalDelegate?.Invoke(pullSteer, brake, throttle * 0.4f, isUpSideDown);
+                    break;
+
+                case State.HardStop:
+                    _originalDelegate?.Invoke(0f, 1f, 0f, isUpSideDown);
+                    break;
+            }
         }
 
         // ── Road edge clamp (T20, V17) ───────────────────────────────────────
 
         private void UpdateMaxLateralDisplace()
         {
-            float edgeDist = float.MaxValue;
+            float edgeDist = PullRightMaxOffset;
             if (NavMesh.FindClosestEdge(transform.position, out NavMeshHit hit, NavMesh.AllAreas))
-                edgeDist = Mathf.Max(0f, hit.distance - 0.3f);
+                edgeDist = Mathf.Max(0f, hit.distance - 0.1f);
 
-            float laneBound = _currentLaneInfo != null ? _currentLaneInfo.laneWidth / 2f : 1.5f;
-            _maxLateralDisplace = Mathf.Clamp(Mathf.Min(edgeDist, laneBound), 0f, PullRightMaxOffset);
+            float laneHalf = PullRightMaxOffset;
+            if (_nav != null && _nav.lanes != null)
+            {
+                int lane = _nav.currentLane;
+                if (lane >= 0 && lane < _nav.lanes.Length)
+                    laneHalf = _nav.lanes[lane].laneWidth / 4f; // quarter-width = right half of right half
+            }
+
+            _maxLateralDisplace = Mathf.Clamp(Mathf.Min(edgeDist, laneHalf), 0f, PullRightMaxOffset);
         }
 
         // ── Forward obstacle (T19, V20) ──────────────────────────────────────
@@ -130,121 +142,45 @@ namespace EmergeNYC.TrafficAI
         private void UpdateObstacleState()
         {
             Vector3 origin = transform.position + transform.forward * (_halfLen + 0.5f);
-            bool hit = Physics.SphereCast(origin, SphereCastRadius, transform.forward,
-                out RaycastHit rh, ObstacleSlowRange);
-
-            if (!hit)
+            if (!Physics.SphereCast(origin, SphereCastRadius, transform.forward,
+                    out RaycastHit rh, ObstacleSlowRange))
             {
-                if (_prevObstacleState == State.SlowDown || _prevObstacleState == State.HardStop)
-                    _prevObstacleState = State.Cruise;
+                _obstacleProximity = 0f;
                 return;
             }
 
-            if (rh.distance <= ObstacleHardRange)
-                _prevObstacleState = State.HardStop;
-            else
-                _prevObstacleState = State.SlowDown;
+            // Don't brake for other traffic vehicles — TSTrafficAI already handles car following
+            if (rh.collider.GetComponent<TSTrafficAI>() != null) { _obstacleProximity = 0f; return; }
+
+            _obstacleProximity = 1f - Mathf.Clamp01((rh.distance - ObstacleHardRange)
+                / (ObstacleSlowRange - ObstacleHardRange));
         }
 
         // ── State resolution ─────────────────────────────────────────────────
 
         private void ResolveState()
         {
-            // EV avoidance takes priority when siren is active (V16)
+            // EV avoidance overrides obstacle states (V16: siren-gated at source)
             if (_evActive)
             {
-                CurrentState = _shoulderBlocked ? State.HardStop : State.PullRight;
+                CurrentState      = _shoulderBlocked ? State.HardStop : State.PullRight;
+                _targetLateralBias = _shoulderBlocked ? 0f : _maxLateralDisplace;
                 return;
             }
 
-            // Fall through to obstacle or cruise
-            CurrentState = _prevObstacleState;
-        }
+            _targetLateralBias = 0f;
 
-        // ── State application ────────────────────────────────────────────────
-
-        private void ApplyState()
-        {
-            switch (CurrentState)
-            {
-                case State.Cruise:
-                    ApplyCruise(1f);
-                    ApplyLateralOffset(0f);
-                    break;
-
-                case State.SlowDown:
-                    // Brake proportional to how close the obstacle is — T19 fills _prevObstacleState
-                    // speed already handled by obstacle checks; just coast
-                    ApplyCruise(0.4f);
-                    ApplyLateralOffset(0f);
-                    break;
-
-                case State.HardStop:
-                    _rcc!.gasInput   = 0f;
-                    _rcc!.brakeInput = 1f;
-                    ApplyLateralOffset(0f);
-                    break;
-
-                case State.PullRight:
-                    ApplyCruise(0.3f);
-                    ApplyLateralOffset(_maxLateralDisplace);
-                    break;
-
-                case State.Yield:
-                    _rcc!.gasInput   = 0f;
-                    _rcc!.brakeInput = 0.6f;
-                    ApplyLateralOffset(_maxLateralDisplace);
-                    break;
-
-                case State.Resume:
-                    ApplyCruise(0.6f);
-                    ApplyLateralOffset(0f);
-                    CurrentState = State.Cruise;
-                    break;
-            }
-        }
-
-        // ── Cruise lane-following (T18, V21) ─────────────────────────────────
-
-        private void ApplyCruise(float throttleScale)
-        {
-            if (_rcc == null || _nav == null) return;
-
-            // RelativeWaypointPositionOnCar is already in vehicle-local space (V21)
-            Vector3 localWP = _nav.RelativeWaypointPositionOnCar;
-
-            // Steer: x-component = lateral offset from car center to waypoint
-            float steer = Mathf.Clamp(localWP.x / 5f, -1f, 1f);
-            _rcc.steerInput = steer + _lateralOffset;
-
-            // Speed P-controller: currentMaxSpeed is in km/h, RCC.speed is also km/h
-            float targetKph = _nav.currentMaxSpeed * throttleScale;
-            float delta     = targetKph - _rcc.speed;
-
-            if (delta > 2f)
-            {
-                _rcc.gasInput   = Mathf.Clamp01(delta / 20f);
-                _rcc.brakeInput = 0f;
-            }
-            else if (delta < -5f)
-            {
-                _rcc.gasInput   = 0f;
-                _rcc.brakeInput = Mathf.Clamp01(-delta / 30f);
-            }
+            if (_obstacleProximity >= 1f)
+                CurrentState = State.HardStop;
+            else if (_obstacleProximity > 0f)
+                CurrentState = State.SlowDown;
             else
-            {
-                _rcc.gasInput   = 0.05f; // idle creep
-                _rcc.brakeInput = 0f;
-            }
+                CurrentState = State.Passthrough;
         }
 
-        // ── Lateral offset application ───────────────────────────────────────
-
-        private void ApplyLateralOffset(float target)
+        private void LerpLateralBias()
         {
-            // Clamp target to road edge limit (V17)
-            target = Mathf.Clamp(target, 0f, _maxLateralDisplace);
-            _lateralOffset = Mathf.MoveTowards(_lateralOffset, target,
+            _lateralBias = Mathf.MoveTowards(_lateralBias, _targetLateralBias,
                 LateralLerpSpeed * Time.fixedDeltaTime);
         }
 
@@ -264,37 +200,30 @@ namespace EmergeNYC.TrafficAI
         {
             var evList = TrafficAPI.GetSirenActiveVehicles(); // V16: siren-gated at source
             _evActive = false;
-
             Vector3 pos = transform.position;
 
             foreach (var (evTransform, evVelocity) in evList)
             {
                 if (evTransform == null) continue;
-                Vector3 toEV  = evTransform.position - pos;
-                float   dist  = toEV.magnitude;
+                float dist = (evTransform.position - pos).magnitude;
                 if (dist > SirenScanRadius) continue;
 
                 _evActive = true;
 
-                // Head-on detection: EV moving toward us and in our lane
-                if (dist < SirenHardStopDist)
+                // Head-on: EV moving toward us within HardStop range
+                if (dist < SirenHardStopDist && evVelocity.sqrMagnitude > 0.1f)
                 {
-                    Vector3 evDir = evVelocity.sqrMagnitude > 0.1f
-                        ? evVelocity.normalized
-                        : (pos - evTransform.position).normalized;
-                    float dot = Vector3.Dot(transform.forward, evDir);
+                    float dot = Vector3.Dot(transform.forward, evVelocity.normalized);
                     if (dot < SirenHardStopDot)
-                    {
-                        // Oncoming in our lane — force hard stop
-                        _prevObstacleState = State.HardStop;
-                        return;
-                    }
+                        _shoulderBlocked = true; // force HardStop path
                 }
-                break; // nearest siren found, _evActive set
+                break;
             }
+
+            if (!_evActive) _shoulderBlocked = false;
         }
 
-        // ── Shoulder obstruction coroutine (T22, V17) ────────────────────────
+        // ── Shoulder obstruction (T22, V17) ──────────────────────────────────
 
         private IEnumerator ShoulderCheckLoop()
         {
@@ -302,22 +231,16 @@ namespace EmergeNYC.TrafficAI
             while (true)
             {
                 yield return wait;
-                CheckShoulderObstruction();
+                if (_evActive) CheckShoulderObstruction();
             }
         }
 
         private void CheckShoulderObstruction()
         {
-            if (!_evActive) { _shoulderBlocked = false; return; }
-
-            // Box to the right of the vehicle at target pull offset
-            float checkDist   = Mathf.Max(_maxLateralDisplace, 0.5f);
-            Vector3 rightCenter = transform.position
-                + transform.right * checkDist
-                + Vector3.up * 0.5f;
-            Vector3 halfExtents = new Vector3(0.5f, 0.5f, _halfLen);
-
-            _shoulderBlocked = Physics.CheckBox(rightCenter, halfExtents, transform.rotation);
+            float checkDist = Mathf.Max(_maxLateralDisplace * 3f, 0.5f); // world-space, not steer units
+            Vector3 center  = transform.position + transform.right * checkDist + Vector3.up * 0.5f;
+            _shoulderBlocked = Physics.CheckBox(center, new Vector3(0.5f, 0.5f, _halfLen),
+                transform.rotation);
         }
     }
 }

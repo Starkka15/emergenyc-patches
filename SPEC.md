@@ -133,10 +133,11 @@ Also ship `EmergeNYC.TrafficAI.dll`: a custom traffic vehicle AI (`CustomTraffic
 | V15 | SDK helper queries (e.g. `EmergencyAPI.ActiveEmergency`) are read-only wrappers. SDK does not cache mutable game objects — always dereferences from the live singleton. |
 | V16 | CTV `PullRight`/`HardStop` states only activate when `EmergencyVehicleRegistry` contains ≥1 EV whose `FFD_SirenControl.SirenState_Current != Off`. Proximity alone (no siren) never triggers EV avoidance. |
 | V17 | CTV lateral displacement clamped by `min(TSLaneInfo.laneWidth / 2, NavMesh.FindClosestEdge distance)` — never push a car off the drivable NavMesh surface. |
-| V18 | `TSTrafficAI` disabled (not destroyed) on CTV injection; re-enabled on CTV `OnDisable` — preserves original AI if mod unloads. |
-| V19 | `RCC_CarControllerV3.gasInput/brakeInput/steerInput` written exclusively from CTV `FixedUpdate` while CTV active. `TSTrafficAI` disabled so no concurrent write occurs. |
+| V18 | `TSTrafficAI` stays enabled — CTV wraps `TSTrafficAI.OnUpdateAI` delegate; original restored on CTV `OnDisable`. TSTrafficAI handles all traffic lights, waypoints, reservations. |
+| V19 | CTV only overrides `OnUpdateAI` args during avoidance states. Normal operation passes through to the original delegate unchanged. RCC inputs are NOT written by CTV. |
 | V20 | Forward `SphereCast` origin = `transform.position + transform.forward * (halfCarLength + 0.5f)` — prevents self-intersection with own collider. |
 | V21 | CTV reads `TSNavigation.RelativeWaypointPosition` and `waypoints[]` for steering — does not call TSNavigation methods. TSNavigation updates itself as its own MonoBehaviour. |
+| V22 | `TSTrafficAI.OnUpdateAI` is the sole control surface for TS car movement. CTV wraps it; the original delegate (wired at spawn by the game) must be preserved and called for normal operation. |
 
 ---
 
@@ -174,6 +175,7 @@ Also ship `EmergeNYC.TrafficAI.dll`: a custom traffic vehicle AI (`CustomTraffic
 
 | id | date | cause | fix |
 |----|------|-------|-----|
+| B10 | 2026-05-06 | CTV wrote RCC gasInput/brakeInput/steerInput — TSTrafficAI never reads those; it fires `OnUpdateAI(steering,brake,throttle,bool)` delegate. Traffic lights/waypoints ignored because TSTrafficAI was disabled. | V18,V19,V22: keep TSTrafficAI enabled, wrap OnUpdateAI delegate instead |
 | B1 | 2026-03-14 | `TSTrafficAI.canMove` setter calls `Object.Destroy(gameObject,20f)` on every set (even true) | `TSTrafficCanMoveFix` patches setter; V2 |
 | B2 | 2026-03-14 | `fullStop` permanent braking: `num3=0` hardcoded → max brake always | `TSTrafficFullStopFix` clears stale players; V6 |
 | B3 | 2026-03-14 | Negative `segDistance` after lane change freezes car | `TSTrafficGetBrakeFix` clamps to 0.5; V7 |
