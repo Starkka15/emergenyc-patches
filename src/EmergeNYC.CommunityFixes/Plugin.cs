@@ -160,42 +160,12 @@ namespace EmergeNYC.CommunityFixes
 
         private static void WireSDKBridges()
         {
-            // TrafficAPI bridge delegates (V12: CommunityFixes owns the registry impl)
-            TrafficAPI.RegisterEmergencyVehicleImpl   = EmergencyVehicleRegistry.Register;
-            TrafficAPI.UnregisterEmergencyVehicleImpl = EmergencyVehicleRegistry.Unregister;
-
-            TrafficAPI.GetYieldingCarsImpl = () =>
-            {
-                var result = new List<TSTrafficAI>();
-                if (TSTrafficAI.trafficAIList == null) return result;
-                foreach (var car in TSTrafficAI.trafficAIList)
-                {
-                    if (car != null && YieldStateManager.IsYielding(car.GetInstanceID()))
-                        result.Add(car);
-                }
-                return result;
-            };
-
+            // TrafficAPI — yield/siren registry removed; will be re-added with new design
             TrafficAPI.SetSpawnDensityImpl = density =>
             {
                 var spawner = TSTrafficSpawner.mainInstance;
                 if (spawner != null)
                     spawner.Amount = Mathf.RoundToInt(spawner.totalAmountOfCars * Mathf.Clamp01(density));
-            };
-
-            TrafficAPI.GetSirenActiveVehiclesImpl = () =>
-            {
-                var result = new List<(Transform, Vector3)>();
-                foreach (var kvp in EmergencyVehicleRegistry._activeSirens)
-                {
-                    var entry = kvp.Value;
-                    if (entry.transform == null) continue;
-                    if (Time.time - entry.lastUpdated > 2f) continue;
-                    var siren = entry.transform.GetComponent<FFD_SirenControl>();
-                    if (siren != null && siren.SirenState_Current != FFD_SirenControl.SirenState.Off)
-                        result.Add((entry.transform, entry.Velocity));
-                }
-                return result;
             };
 
             // CharacterAPI bridge delegates

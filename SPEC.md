@@ -185,3 +185,51 @@ Also ship `EmergeNYC.TrafficAI.dll`: a custom traffic vehicle AI (`CustomTraffic
 | B7 | 2026-03-14 | `CastEmergencySounds` calls `BlockTraffic()+GetOutOfLane()` → canMove=false + hard swerve | `CastEmergencySoundsPatch` disables entirely |
 | B8 | open | `TSTrafficSpawner.CheckFarCarsSingleThread` uses `myPosition` (spawner origin) not camera → despawns visible cars | fix: T1 |
 | B9 | open | Siren broadcast uses flat 60m radius regardless of direction → cars behind miss signal, cars ahead over-react | fix: T4 |
+
+---
+
+## §P — Pending (Pre-Release)
+
+### TrafficAI — In-Game Verification
+
+All CTV code was written but has **never been tested in-game**. The B10 fix (OnUpdateAI delegation) resolved the architecture flaw but the behaviour is unverified.
+
+| id | status | desc |
+|----|--------|------|
+| P1 | open | Verify `OnUpdateAI` delegate is non-null at CTV `Start()`. Game may wire it after `OnEnable` — if null, CTV will NPE silently. Check `TrafficAI_diag.log` for errors on first run. |
+| P2 | open | Verify traffic lights still work — TSTrafficAI handles reservation system; CTV must not interfere. Watch for cars running reds or deadlocking at junctions. |
+| P3 | open | Verify EV yield triggers: activate a siren, confirm nearby TS cars enter PullRight/HardStop. Check `TrafficAI_diag.log` for `[CTV]` state transitions. |
+| P4 | open | Tune PullRight steer bias — `PullRightMaxOffset=0.5` steer units is a guess. May under- or over-steer depending on lane width. Adjust until cars pull to shoulder without clipping curb. |
+| P5 | open | Tune forward SphereCast — `ObstacleSlowRange=30m` may be too aggressive on tight city streets causing chain-braking. Watch for accordion effect in dense traffic. |
+| P6 | open | Verify CTV `OnDisable` restores original `OnUpdateAI` delegate — if not, disabling/re-enabling a car leaves it with a broken delegate and it freezes. |
+| P7 | open | Verify baked car pullover (T6 params: offset=4m, speed=3.5, hold=2s, timeout=5s) — test with fire truck, police car, ambulance siren. |
+| P8 | open | End-to-end: spawn traffic, activate EV siren, drive through — cars should yield, resume after EV passes. No crashes, no frozen cars, no log spam. |
+
+### Texture Replacer — In-Game Verification
+
+| id | status | desc |
+|----|--------|------|
+| P9 | open | Drop a test PNG into `BepInEx/plugins/Textures/` named after a known game texture, load game, verify replacement applied. Check `CommunityFixes_diag.log` for `[TextureReplacer]` loaded count. |
+| P10 | open | Verify periodic rescan catches Addressables-loaded objects (spawned vehicles, props) — they arrive after scene load and may miss the `sceneLoaded` hook. |
+| P11 | open | Verify `Resources.Load` postfix intercepts texture loads at runtime (not just on-scene materials). |
+
+### Custom Vehicle System — Not Ready
+
+CustomVehicleLoader.cs and CustomVehicleUI.cs exist locally (uncommitted). Do not commit or release until the vehicle pipeline is working.
+
+| id | status | desc |
+|----|--------|------|
+| P12 | open | **[BLOCKER] DMC Undercover orientation** — vehicle spawns nose-up (90° pitch). All axis correction attempts failed (see dmcun-vehicle-mod.md). Need fresh approach: add bounding-box diagnostics to `dmcun_import.py` to print world-space corner positions of car body mesh before `transform_apply` to confirm true Blender orientation. |
+| P13 | open | Only 1 wheel visible in-game. Likely symptom of P12 (other wheels exist but wrong position). Investigate after orientation fixed. |
+| P14 | open | Add physics: `RCC_CarControllerV3`, `WheelColliders` at wheel positions, `Rigidbody`. Requires prefab-setup script (not just PostImport). Blocked by P12+P13. |
+| P15 | open | ELS: add `SirenControl`, `iTS_SirenBridge`, `FFD_SirenControl`. Requires P14 (RCC_CarControllerV3 must exist first). |
+| P16 | open | Verify glass transparency in-game — Standard shader `_Mode=3` set in VehiclePostImport.cs but not yet confirmed visible. |
+| P17 | open | Once vehicle pipeline working: commit CustomVehicleLoader.cs + CustomVehicleUI.cs, add F6 UI docs. |
+
+### Release Gate
+
+| id | status | desc |
+|----|--------|------|
+| P18 | open | All P1–P11 verified (TrafficAI + TextureReplacer green) |
+| P19 | open | Bump version in `Plugin.cs` (`PluginVersion`) + CHANGELOG |
+| P20 | open | Tag GitHub release (v0.2.0 or higher) |

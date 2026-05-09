@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 using WoofTools.API;
-using EmergeNYC.ModdingSDK;
 
 namespace EmergeNYC.CommunityFixes.Patches
 {
@@ -152,8 +151,8 @@ namespace EmergeNYC.CommunityFixes.Patches
         {
             int id = __instance.GetInstanceID();
 
-            // V6: skip cars the yield system intentionally stopped
-            if (YieldStateManager.IsYielding(id)) return;
+            // Skip cars that are legitimately stopped (lastSet within 2s = traffic light / block stop)
+            if (_lastSetStuckRef(__instance) + 2f >= Time.time) return;
 
             EnsureStuckRefs();
 
@@ -181,7 +180,7 @@ namespace EmergeNYC.CommunityFixes.Patches
             bool canMoveBool = _lastSetStuckRef(__instance) + 2f < Time.time;
             bool slowEnough  = __instance.carSpeed < ParkedSpeedThreshold;
 
-            if (canMoveBool && !fullStop && slowEnough && !YieldStateManager.IsYielding(id))
+            if (canMoveBool && !fullStop && slowEnough)
             {
                 if (!state.wasParked)
                 {
@@ -233,17 +232,11 @@ namespace EmergeNYC.CommunityFixes.Patches
             }
         }
 
-        [HarmonyPatch("OnEnable")]
-        [HarmonyPostfix]
-        public static void OnEnable_Spawned(TSTrafficAI __instance) =>
-            TrafficAPI.RaiseCarSpawned(__instance);
-
         [HarmonyPatch("OnDisable")]
         [HarmonyPostfix]
         public static void OnDisable_Cleanup(TSTrafficAI __instance)
         {
             _stuckTracking.Remove(__instance.GetInstanceID());
-            TrafficAPI.RaiseCarDespawned(__instance);
         }
     }
 }
