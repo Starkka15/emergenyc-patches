@@ -35,7 +35,8 @@ namespace EmergeNYC.TrafficAI
         private float _lateralBias;         // current rightward steer offset (lerped)
         private float _targetLateralBias;
         private bool  _evActive;
-        private bool  _shoulderBlocked;
+        private bool  _evHeadOn;            // EV approaching head-on → HardStop regardless of shoulder
+        private bool  _shoulderBlocked;     // physical obstacle to the right → can't PullRight
         private float _maxLateralDisplace;
 
         // ── Tuning ───────────────────────────────────────────────────────────
@@ -66,12 +67,20 @@ namespace EmergeNYC.TrafficAI
                 return;
             }
 
-            // Wrap the delegate (V22: original must be preserved and called)
-            _originalDelegate = _tsAI.OnUpdateAI;
-            _tsAI.OnUpdateAI  = OnUpdateAIWrapper;
-
+            // Defer one frame: TSSimpleCar.Start() wires OnUpdateAI in its own Start().
+            // If CTV.Start() ran first we'd capture null and TSSimpleCar would then
+            // Delegate.Combine(our wrapper, OnAIUpdate) causing double-invocation.
+            StartCoroutine(WrapDelegate());
             StartCoroutine(SirenScanLoop());
             StartCoroutine(ShoulderCheckLoop());
+        }
+
+        private void OnEnable()
+        {
+            // Re-wrap after pool recycle (OnDisable restored the original delegate).
+            // Guard: _tsAI null means Start() hasn't run yet — WrapDelegate starts from Start().
+            if (_tsAI == null) return;
+            StartCoroutine(WrapDelegate());
         }
 
         private void OnDisable()
@@ -79,6 +88,20 @@ namespace EmergeNYC.TrafficAI
             // Restore original delegate so TSTrafficAI drives normally if CTV unloads (V18)
             if (_tsAI != null && _originalDelegate != null)
                 _tsAI.OnUpdateAI = _originalDelegate;
+        }
+
+        private IEnumerator WrapDelegate()
+        {
+            yield return null; // wait one frame — guarantees TSSimpleCar.Start() has wired its delegate
+            if (_tsAI == null || !enabled) yield break;
+
+            _originalDelegate = _tsAI.OnUpdateAI;
+            _tsAI.OnUpdateAI  = OnUpdateAIWrapper;
+
+            if (_originalDelegate == null)
+                TrafficAIPlugin.Log($"[CTV] WARNING: original delegate null on {name} after one frame — car won't move");
+            else
+                TrafficAIPlugin.Log($"[CTV] Wrapped delegate on {name}");
         }
 
         private void FixedUpdate()
@@ -163,8 +186,9 @@ namespace EmergeNYC.TrafficAI
             // EV avoidance overrides obstacle states (V16: siren-gated at source)
             if (_evActive)
             {
-                CurrentState      = _shoulderBlocked ? State.HardStop : State.PullRight;
-                _targetLateralBias = _shoulderBlocked ? 0f : _maxLateralDisplace;
+                bool hardStop      = _evHeadOn || _shoulderBlocked;
+                CurrentState       = hardStop ? State.HardStop : State.PullRight;
+                _targetLateralBias = hardStop ? 0f : _maxLateralDisplace;
                 return;
             }
 
@@ -214,13 +238,16 @@ namespace EmergeNYC.TrafficAI
                 if (dist < SirenHardStopDist && evVelocity.sqrMagnitude > 0.1f)
                 {
                     float dot = Vector3.Dot(transform.forward, evVelocity.normalized);
-                    if (dot < SirenHardStopDot)
-                        _shoulderBlocked = true; // force HardStop path
+                    _evHeadOn = dot < SirenHardStopDot;
+                }
+                else
+                {
+                    _evHeadOn = false;
                 }
                 break;
             }
 
-            if (!_evActive) _shoulderBlocked = false;
+            if (!_evActive) { _evHeadOn = false; _shoulderBlocked = false; }
         }
 
         // ── Shoulder obstruction (T22, V17) ──────────────────────────────────
