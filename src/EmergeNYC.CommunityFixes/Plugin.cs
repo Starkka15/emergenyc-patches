@@ -51,10 +51,11 @@ namespace EmergeNYC.CommunityFixes
         {
             Logger = base.Logger;
 
+            string pluginDir = Path.GetDirectoryName(Info.Location) ?? ".";
+
             // Set up direct file logging next to the plugin DLL
             try
             {
-                string pluginDir = Path.GetDirectoryName(Info.Location) ?? ".";
                 _logPath = Path.Combine(pluginDir, "CommunityFixes_diag.log");
                 File.WriteAllText(_logPath,
                     $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] === {PluginName} v{PluginVersion} starting ===\n" +
@@ -71,6 +72,9 @@ namespace EmergeNYC.CommunityFixes
             // Init SDK (V12: SDK assembly, CommunityFixes wires bridges)
             EmergeNYCSDK.Init(Log, msg => Logger.LogError(msg));
             WireSDKBridges();
+
+            // Texture replacer — loads PNGs from <pluginDir>/Textures/
+            TextureReplacer.Init(pluginDir, this);
 
             Logger.LogInfo("Initializing Harmony patches...");
 

@@ -87,6 +87,10 @@
       <HintPath>$(ManagedDir)/UnityEngine.AssetBundleModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(ManagedDir)/UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Unity.ResourceManager">
       <HintPath>$(ManagedDir)/Unity.ResourceManager.dll</HintPath>
       <Private>false</Private>
