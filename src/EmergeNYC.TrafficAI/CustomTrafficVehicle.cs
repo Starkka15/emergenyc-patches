@@ -172,8 +172,10 @@ namespace EmergeNYC.TrafficAI
                 return;
             }
 
-            // Don't brake for other traffic vehicles — TSTrafficAI already handles car following
-            if (rh.collider.GetComponent<TSTrafficAI>() != null) { _obstacleProximity = 0f; return; }
+            // Don't brake for other traffic vehicles — TSTrafficAI already handles car following.
+            // Use GetComponentInParent: TSTrafficAI lives on the root but the hit collider
+            // is typically on a child mesh object with no TSTrafficAI directly on it.
+            if (rh.collider.GetComponentInParent<TSTrafficAI>() != null) { _obstacleProximity = 0f; return; }
 
             _obstacleProximity = 1f - Mathf.Clamp01((rh.distance - ObstacleHardRange)
                 / (ObstacleSlowRange - ObstacleHardRange));
