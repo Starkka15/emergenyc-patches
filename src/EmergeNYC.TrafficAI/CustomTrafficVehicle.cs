@@ -40,14 +40,14 @@ namespace EmergeNYC.TrafficAI
         private float _maxLateralDisplace;
 
         // ── Tuning ───────────────────────────────────────────────────────────
-        private const float ObstacleSlowRange    = 30f;
-        private const float ObstacleHardRange    = 8f;
+        private const float ObstacleSlowRange    = 15f;  // reduced from 30: avoids triggering for distant/adjacent objects
+        private const float ObstacleHardRange    = 6f;
         private const float SirenScanRadius      = 80f;
         private const float SirenHardStopDist    = 30f;
         private const float SirenHardStopDot     = -0.5f;
         private const float PullRightMaxOffset   = 0.5f;    // steer units (TSTrafficAI uses -1..1)
         private const float LateralLerpSpeed     = 1.5f;
-        private const float SphereCastRadius     = 1.4f;
+        private const float SphereCastRadius     = 0.9f;  // reduced from 1.4: avoids hitting adjacent-lane vehicles
         private const float ScanInterval         = 0.1f;
 
         // ── Lifecycle ────────────────────────────────────────────────────────
@@ -176,6 +176,15 @@ namespace EmergeNYC.TrafficAI
             // Use GetComponentInParent: TSTrafficAI lives on the root but the hit collider
             // is typically on a child mesh object with no TSTrafficAI directly on it.
             if (rh.collider.GetComponentInParent<TSTrafficAI>() != null) { _obstacleProximity = 0f; return; }
+
+            // Don't brake for any moving vehicle coming toward us (oncoming player/NPC).
+            // Only stop for stationary or same-direction obstacles (genuine blockage).
+            var rb = rh.collider.GetComponentInParent<Rigidbody>();
+            if (rb != null && rb.velocity.sqrMagnitude > 0.25f)
+            {
+                float dot = Vector3.Dot(transform.forward, rb.velocity.normalized);
+                if (dot < -0.3f) { _obstacleProximity = 0f; return; } // oncoming — will clear
+            }
 
             _obstacleProximity = 1f - Mathf.Clamp01((rh.distance - ObstacleHardRange)
                 / (ObstacleSlowRange - ObstacleHardRange));

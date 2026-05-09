@@ -33,14 +33,15 @@ namespace EmergeNYC.CommunityFixes.Patches
             return cam != null ? cam.transform.position : instance.transform.position;
         }
 
-        // T1: Override myPosition to camera pos before CheckFarCarsSingleThread reads it.
-        // (Update sets myPosition = transform.position immediately before calling this method.)
+        // T1: Skip CheckFarCarsSingleThread entirely — don't despawn TS cars by distance.
+        // The camera-based 150m threshold still fired for visible cars. User explicitly
+        // wants no view-range despawning. Pool recycling still happens via AddCar when
+        // the spawner needs new cars (upside-down / disabled handled separately if needed).
         [HarmonyPatch("CheckFarCarsSingleThread")]
         [HarmonyPrefix]
-        public static void CheckFarCars_UseCameraPos(TSTrafficSpawner __instance)
+        public static bool CheckFarCars_Disable(TSTrafficSpawner __instance)
         {
-            EnsureRefs();
-            _myPositionRef(__instance) = CameraPos(__instance);
+            return false; // skip original
         }
 
         // T1: Keep myPosition = camera after Update runs (for CheckNearLanesSingleThread coroutine).
